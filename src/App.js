@@ -79,16 +79,16 @@ const PlayPauseButton = styled(Button)`
 
 const TimerComponent = () => {
   const [timer, setTimer] = useState({
-    task: "",
-    elapsedTime: 0,
+    description: "",
     isRunning: false,
     startTime: null,
+    lastPausedTime: null,
+    pausedElapsedInterval: 0,
   });
   const [timeInput, setTimeInput] = useState("0:00:00");
   const [isEditing, setIsEditing] = useState(false);
-  const [editStartTime, setEditStartTime] = useState(null);
-  const [editStartElapsedTime, setEditStartElapsedTime] = useState(0);
-  const [wasRunningBeforeEdit, setWasRunningBeforeEdit] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [focusedTime, setFocusedTime] = useState(null);
   const intervalRef = useRef(null);
   const timerRef = ref(database, "timer");
 
@@ -97,23 +97,32 @@ const TimerComponent = () => {
       const data = snapshot.val();
       if (data) {
         const currentTime = Date.now();
-        const elapsedTime =
-          data.isRunning && data.startTime
-            ? Math.floor((currentTime - data.startTime) / 1000) +
-              data.elapsedTime
-            : data.elapsedTime;
+        const elapsedTime = calculateElapsedTime(data, currentTime);
 
         if (!isEditing) {
           setTimeInput(formatTime(elapsedTime));
         }
 
         setTimer({
-          task: data.task || "",
-          elapsedTime,
+          description: data.description || "",
           isRunning: data.isRunning || false,
           startTime: data.startTime || null,
+          lastPausedTime: data.lastPausedTime || null,
+          pausedElapsedInterval: data.pausedElapsedInterval || 0,
         });
+      } else {
+        // If no data in database, initialize with default values
+        const defaultState = {
+          description: "",
+          isRunning: false,
+          startTime: null,
+          lastPausedTime: null,
+          pausedElapsedInterval: 0,
+        };
+        setTimer(defaultState);
+        updateFirebase(defaultState);
       }
+      setIsLoading(false);
     });
 
     return () => unsubscribe();
@@ -122,181 +131,188 @@ const TimerComponent = () => {
   useEffect(() => {
     if (timer.isRunning && !isEditing) {
       intervalRef.current = setInterval(() => {
-        setTimer((prevTimer) => {
-          const newElapsedTime = prevTimer.elapsedTime + 1;
-          if (!isEditing) {
-            setTimeInput(formatTime(newElapsedTime));
-          }
-          return { ...prevTimer, elapsedTime: newElapsedTime };
-        });
-      }, 1000);
+        const elapsedTime = calculateElapsedTime(timer, Date.now());
+        setTimeInput(formatTime(elapsedTime));
+      }, 200);
     } else {
       clearInterval(intervalRef.current);
     }
 
     return () => clearInterval(intervalRef.current);
-  }, [timer.isRunning, isEditing]);
+  }, [
+    timer.isRunning,
+    isEditing,
+    timer.startTime,
+    timer.pausedElapsedInterval,
+  ]);
 
-  const formatTime = (totalSeconds) => {
-    if (
-      typeof totalSeconds !== "number" ||
-      isNaN(totalSeconds) ||
-      totalSeconds < 0
-    ) {
+  const calculateElapsedTime = (timerData, currentTime) => {
+    if (timerData.isRunning && timerData.startTime) {
+      return Math.floor(
+        (currentTime - timerData.startTime - timerData.pausedElapsedInterval) /
+          1000
+      );
+    }
+    if (timerData.startTime && timerData.lastPausedTime) {
+      return Math.floor(
+        (timerData.lastPausedTime -
+          timerData.startTime -
+          timerData.pausedElapsedInterval) /
+          1000
+      );
+    }
+    return 0;
+  };
+
+  const formatTime = (seconds) => {
+    if (isNaN(seconds) || seconds < 0) {
       return "0:00:00";
     }
-
-    totalSeconds = Math.floor(totalSeconds);
-
-    const hours = Math.floor(totalSeconds / 3600);
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const seconds = totalSeconds % 60;
-
-    const hoursStr = hours.toString();
-    const minutesStr = minutes.toString().padStart(2, "0");
-    const secondsStr = seconds.toString().padStart(2, "0");
-
-    return `${hoursStr}:${minutesStr}:${secondsStr}`;
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const remainingSeconds = seconds % 60;
+    return `${hours}:${minutes.toString().padStart(2, "0")}:${remainingSeconds
+      .toString()
+      .padStart(2, "0")}`;
   };
 
   const parseTime = (timeString) => {
-    if (!timeString || timeString.trim() === "") {
-      return 0;
-    }
-
-    const parts = timeString.split(":");
-    let hours = 0,
-      minutes = 0,
-      seconds = 0;
-
-    if (parts.length === 1) {
-      minutes = parseInt(parts[0], 10) || 0;
-      hours = Math.floor(minutes / 60);
-      minutes = minutes % 60;
-    } else if (parts.length === 2) {
-      minutes = parseInt(parts[0], 10) || 0;
-      seconds = parseInt(parts[1], 10) || 0;
-    } else if (parts.length === 3) {
-      hours = parseInt(parts[0], 10) || 0;
-      minutes = parseInt(parts[1], 10) || 0;
-      seconds = parseInt(parts[2], 10) || 0;
-    }
-
-    minutes += Math.floor(seconds / 60);
-    seconds = seconds % 60;
-    hours += Math.floor(minutes / 60);
-    minutes = minutes % 60;
-
+    const [hours, minutes, seconds] = timeString.split(":").map(Number);
     return hours * 3600 + minutes * 60 + seconds;
   };
 
-  const updateFirebase = (updates) => {
-    const filteredUpdates = Object.entries(updates).reduce(
-      (acc, [key, value]) => {
-        if (value !== undefined) {
-          acc[key] = value;
-        }
-        return acc;
-      },
-      {}
-    );
-
-    set(timerRef, filteredUpdates);
-  };
-
-  const toggleTimer = () => {
-    const currentTime = Date.now();
-    const newIsRunning = !timer.isRunning;
-
-    updateFirebase({
-      task: timer.task,
-      isRunning: newIsRunning,
-      startTime: newIsRunning ? currentTime : null,
-      elapsedTime: timer.elapsedTime,
-    });
-  };
-
-  const handleTaskChange = (e) => {
-    const newTask = e.target.value;
-    setTimer((prevTimer) => ({ ...prevTimer, task: newTask }));
-    updateFirebase({ task: newTask });
+  const handleDescriptionChange = (e) => {
+    const newDescription = e.target.value;
+    setTimer((prevTimer) => ({ ...prevTimer, description: newDescription }));
+    updateFirebase({ description: newDescription });
   };
 
   const handleTimeChange = (e) => {
-    const value = e.target.value;
-    setTimeInput(value);
+    setTimeInput(e.target.value);
   };
 
   const handleTimeFocus = () => {
+    setFocusedTime(timeInput);
     setIsEditing(true);
-    const currentTime = Date.now();
-    setEditStartTime(currentTime);
-
-    const timerRef = ref(database, "timer");
-    get(timerRef).then((snapshot) => {
-      if (snapshot.exists()) {
-        const data = snapshot.val();
-        const latestElapsedTime = data.isRunning
-          ? Math.floor((currentTime - data.startTime) / 1000) + data.elapsedTime
-          : data.elapsedTime;
-        setEditStartElapsedTime(latestElapsedTime);
-      }
-    });
-
-    setWasRunningBeforeEdit(timer.isRunning);
   };
-  const handleTimeBlur = () => {
-    setIsEditing(false);
-    const currentTime = Date.now();
-    const newInputSeconds = parseTime(timeInput);
-    const timeElapsedSinceEdit = Math.floor(
-      (currentTime - editStartTime) / 1000
-    );
 
-    let finalElapsedTime;
-    if (wasRunningBeforeEdit) {
-      if (newInputSeconds !== editStartElapsedTime) {
-        finalElapsedTime = newInputSeconds + timeElapsedSinceEdit;
+  const handleTimeBlur = () => {
+    const prevTimeInput = focusedTime;
+    setFocusedTime(null);
+    setIsEditing(false);
+
+    const newInputSeconds = parseTime(timeInput);
+    const currentTime = Date.now();
+    const currentElapsedTime = calculateElapsedTime(timer, currentTime);
+
+    if (timeInput !== prevTimeInput) {
+      let newStartTime, newPausedElapsedInterval;
+
+      if (timer.isRunning) {
+        newStartTime = currentTime - newInputSeconds * 1000;
+        newPausedElapsedInterval = timer.pausedElapsedInterval;
       } else {
-        finalElapsedTime = editStartElapsedTime + timeElapsedSinceEdit;
+        newStartTime = null;
+        newPausedElapsedInterval = timer.pausedElapsedInterval;
       }
+
+      setTimer((prevTimer) => ({
+        ...prevTimer,
+        startTime: newStartTime,
+        pausedElapsedInterval: newPausedElapsedInterval,
+      }));
+
+      updateFirebase({
+        startTime: newStartTime,
+        pausedElapsedInterval: newPausedElapsedInterval,
+      });
     } else {
-      finalElapsedTime = newInputSeconds;
+      setTimeInput(formatTime(currentElapsedTime));
+    }
+  };
+
+  const toggleTimer = async () => {
+    const currentTime = Date.now();
+    let newTimerState;
+
+    if (timer.isRunning) {
+      // Pausing the timer
+      const snapshot = await get(timerRef);
+      const dbTimer = snapshot.val();
+
+      if (
+        dbTimer &&
+        dbTimer.lastPausedTime &&
+        dbTimer.lastPausedTime > currentTime
+      ) {
+        // Another device has paused more recently, don't update
+        return;
+      }
+
+      newTimerState = {
+        ...timer,
+        isRunning: false,
+        lastPausedTime: currentTime,
+      };
+    } else {
+      // Starting the timer
+      const additionalPausedInterval = timer.lastPausedTime
+        ? currentTime - timer.lastPausedTime
+        : 0;
+      newTimerState = {
+        ...timer,
+        isRunning: true,
+        startTime: timer.startTime || currentTime,
+        lastPausedTime: null,
+        pausedElapsedInterval:
+          timer.pausedElapsedInterval + additionalPausedInterval,
+      };
     }
 
-    setTimeInput(formatTime(finalElapsedTime));
-
-    setTimer((prevTimer) => ({
-      ...prevTimer,
-      elapsedTime: finalElapsedTime,
-      isRunning: wasRunningBeforeEdit,
-      startTime: wasRunningBeforeEdit ? currentTime : null,
-    }));
-
-    updateFirebase({
-      elapsedTime: finalElapsedTime,
-      isRunning: wasRunningBeforeEdit,
-      startTime: wasRunningBeforeEdit ? currentTime : null,
-    });
+    setTimer(newTimerState);
+    updateFirebase(newTimerState);
   };
+
   const resetTimer = () => {
-    setTimeInput("0:00:00");
-    setIsEditing(false);
-    setWasRunningBeforeEdit(false);
-    updateFirebase({
-      task: timer.task,
-      elapsedTime: 0,
+    const resetState = {
+      description: "",
       isRunning: false,
       startTime: null,
-    });
+      lastPausedTime: null,
+      pausedElapsedInterval: 0,
+    };
+    setTimer(resetState);
+    setTimeInput("0:00:00");
+    setIsEditing(false);
+    updateFirebase(resetState);
   };
+
+  const updateFirebase = async (updates) => {
+    const snapshot = await get(timerRef);
+    const dbTimer = snapshot.val() || {};
+
+    // If we're updating lastPausedTime, only update if our time is more recent
+    if (
+      updates.lastPausedTime &&
+      dbTimer.lastPausedTime &&
+      dbTimer.lastPausedTime > updates.lastPausedTime
+    ) {
+      delete updates.lastPausedTime;
+    }
+
+    set(timerRef, { ...dbTimer, ...updates });
+  };
+
+  if (isLoading) {
+    return <div>Loading...</div>;
+  }
 
   return (
     <TimerContainer>
       <TaskInput
         type="text"
-        value={timer.task}
-        onChange={handleTaskChange}
+        value={timer.description}
+        onChange={handleDescriptionChange}
         placeholder="What are you working on?"
       />
       <TimeInput
