@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Play, Pause, X } from "lucide-react";
 import { initializeApp } from "firebase/app";
-import { getDatabase, ref, onValue, set, get } from "firebase/database";
+import { getDatabase, ref, onValue, update } from "firebase/database";
 import styled from "@emotion/styled";
 
 const firebaseConfig = {
@@ -89,55 +89,81 @@ const TimerComponent = () => {
   const [isEditing, setIsEditing] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [focusedTime, setFocusedTime] = useState(null);
+  const [isOffline, setIsOffline] = useState(!navigator.onLine);
   const intervalRef = useRef(null);
-  const timerRef = ref(database, "timer");
+  const timerRef = useRef(ref(database, "timer"));
 
   useEffect(() => {
-    const unsubscribe = onValue(timerRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data) {
-        const currentTime = Date.now();
-        const elapsedTime = calculateElapsedTime(data, currentTime);
+    const handleOnline = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
 
-        if (!isEditing) {
-          setTimeInput(formatTime(elapsedTime));
-        }
-
-        setTimer({
-          description: data.description || "",
-          isRunning: data.isRunning || false,
-          startTime: data.startTime || null,
-          lastPausedTime: data.lastPausedTime || null,
-          pausedElapsedInterval: data.pausedElapsedInterval || 0,
-        });
-      } else {
-        // If no data in database, initialize with default values
-        const defaultState = {
-          description: "",
-          isRunning: false,
-          startTime: null,
-          lastPausedTime: null,
-          pausedElapsedInterval: 0,
-        };
-        setTimer(defaultState);
-        updateFirebase(defaultState);
+  const updateFirebase = useCallback(
+    async (updates) => {
+      if (isOffline) {
+        console.log("Offline: Changes will be synced when online");
+        return;
       }
-      setIsLoading(false);
-    });
+      try {
+        const dbRef = timerRef.current;
+        await update(dbRef, updates);
+      } catch (error) {
+        console.error("Error updating Firebase:", error);
+      }
+    },
+    [isOffline]
+  );
+
+  useEffect(() => {
+    const dbRef = timerRef.current;
+    const unsubscribe = onValue(
+      dbRef,
+      (snapshot) => {
+        const data = snapshot.val();
+        if (data) {
+          const currentTime = Date.now();
+          const elapsedTime = calculateElapsedTime(data, currentTime);
+          if (!isEditing) {
+            setTimeInput(formatTime(elapsedTime));
+          }
+          setTimer(data);
+        } else {
+          const defaultState = {
+            description: "",
+            isRunning: false,
+            startTime: null,
+            lastPausedTime: null,
+            pausedElapsedInterval: 0,
+          };
+          setTimer(defaultState);
+          updateFirebase(defaultState);
+        }
+        setIsLoading(false);
+      },
+      (error) => {
+        console.error("Error fetching data:", error);
+        setIsLoading(false);
+      }
+    );
 
     return () => unsubscribe();
-  }, [isEditing]);
+  }, [isEditing, updateFirebase]);
 
   useEffect(() => {
     if (timer.isRunning && !isEditing) {
       intervalRef.current = setInterval(() => {
         const elapsedTime = calculateElapsedTime(timer, Date.now());
         setTimeInput(formatTime(elapsedTime));
-      }, 200);
+      }, 100); // 더 정확한 업데이트를 위해 100ms로 변경
     } else {
       clearInterval(intervalRef.current);
     }
-
     return () => clearInterval(intervalRef.current);
   }, [
     timer.isRunning,
@@ -146,7 +172,7 @@ const TimerComponent = () => {
     timer.pausedElapsedInterval,
   ]);
 
-  const calculateElapsedTime = (timerData, currentTime) => {
+  const calculateElapsedTime = useCallback((timerData, currentTime) => {
     if (timerData.isRunning && timerData.startTime) {
       return Math.floor(
         (currentTime - timerData.startTime - timerData.pausedElapsedInterval) /
@@ -162,100 +188,101 @@ const TimerComponent = () => {
       );
     }
     return 0;
-  };
+  }, []);
 
-  const formatTime = (seconds) => {
-    if (isNaN(seconds) || seconds < 0) {
-      return "0:00:00";
-    }
+  const formatTime = useCallback((seconds) => {
+    if (isNaN(seconds) || seconds < 0) return "0:00:00";
     const hours = Math.floor(seconds / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
     const remainingSeconds = seconds % 60;
     return `${hours}:${minutes.toString().padStart(2, "0")}:${remainingSeconds
       .toString()
       .padStart(2, "0")}`;
-  };
+  }, []);
 
-  const parseTime = (timeString) => {
+  const parseTime = useCallback((timeString) => {
     const [hours, minutes, seconds] = timeString.split(":").map(Number);
     return hours * 3600 + minutes * 60 + seconds;
-  };
+  }, []);
 
-  const handleDescriptionChange = (e) => {
-    const newDescription = e.target.value;
-    setTimer((prevTimer) => ({ ...prevTimer, description: newDescription }));
-    updateFirebase({ description: newDescription });
-  };
+  const handleDescriptionChange = useCallback(
+    (e) => {
+      const newDescription = e.target.value;
+      setTimer((prevTimer) => ({ ...prevTimer, description: newDescription }));
+      updateFirebase({ description: newDescription });
+    },
+    [updateFirebase]
+  );
 
-  const handleTimeChange = (e) => {
+  const handleTimeChange = useCallback((e) => {
     setTimeInput(e.target.value);
-  };
+  }, []);
 
-  const handleTimeFocus = () => {
+  const handleTimeFocus = useCallback(() => {
     setFocusedTime(timeInput);
     setIsEditing(true);
-  };
+  }, [timeInput]);
 
-  const handleTimeBlur = () => {
+  const handleTimeBlur = useCallback(() => {
     const prevTimeInput = focusedTime;
     setFocusedTime(null);
     setIsEditing(false);
 
-    const newInputSeconds = parseTime(timeInput);
-    const currentTime = Date.now();
-    const currentElapsedTime = calculateElapsedTime(timer, currentTime);
-
     if (timeInput !== prevTimeInput) {
-      let newStartTime, newPausedElapsedInterval;
+      const newInputSeconds = parseTime(timeInput);
+      const currentTime = Date.now();
+      const currentElapsedTime = calculateElapsedTime(timer, currentTime);
 
-      if (timer.isRunning) {
-        newStartTime = currentTime - newInputSeconds * 1000;
-        newPausedElapsedInterval = timer.pausedElapsedInterval;
+      if (Math.abs(newInputSeconds - currentElapsedTime) > 1) {
+        let newStartTime, newPausedElapsedInterval;
+
+        if (timer.isRunning) {
+          newStartTime = currentTime - newInputSeconds * 1000;
+          newPausedElapsedInterval = timer.pausedElapsedInterval;
+        } else {
+          newStartTime = null;
+          newPausedElapsedInterval = timer.pausedElapsedInterval;
+        }
+
+        setTimer((prevTimer) => ({
+          ...prevTimer,
+          startTime: newStartTime,
+          pausedElapsedInterval: newPausedElapsedInterval,
+        }));
+
+        updateFirebase({
+          startTime: newStartTime,
+          pausedElapsedInterval: newPausedElapsedInterval,
+        });
       } else {
-        newStartTime = null;
-        newPausedElapsedInterval = timer.pausedElapsedInterval;
+        setTimeInput(formatTime(currentElapsedTime));
       }
-
-      setTimer((prevTimer) => ({
-        ...prevTimer,
-        startTime: newStartTime,
-        pausedElapsedInterval: newPausedElapsedInterval,
-      }));
-
-      updateFirebase({
-        startTime: newStartTime,
-        pausedElapsedInterval: newPausedElapsedInterval,
-      });
     } else {
+      // If the time hasn't changed, ensure the display shows the current elapsed time
+      const currentElapsedTime = calculateElapsedTime(timer, Date.now());
       setTimeInput(formatTime(currentElapsedTime));
     }
-  };
+  }, [
+    focusedTime,
+    timeInput,
+    timer,
+    parseTime,
+    calculateElapsedTime,
+    formatTime,
+    updateFirebase,
+  ]);
 
-  const toggleTimer = async () => {
+  const toggleTimer = useCallback(async () => {
     const currentTime = Date.now();
     let newTimerState;
 
     if (timer.isRunning) {
-      // Pausing the timer
-      const snapshot = await get(timerRef);
-      const dbTimer = snapshot.val();
-
-      if (
-        dbTimer &&
-        dbTimer.lastPausedTime &&
-        dbTimer.lastPausedTime > currentTime
-      ) {
-        // Another device has paused more recently, don't update
-        return;
-      }
-
       newTimerState = {
         ...timer,
         isRunning: false,
         lastPausedTime: currentTime,
       };
     } else {
-      // Starting the timer
       const additionalPausedInterval = timer.lastPausedTime
         ? currentTime - timer.lastPausedTime
         : 0;
@@ -271,9 +298,9 @@ const TimerComponent = () => {
 
     setTimer(newTimerState);
     updateFirebase(newTimerState);
-  };
+  }, [timer, updateFirebase]);
 
-  const resetTimer = () => {
+  const resetTimer = useCallback(() => {
     const resetState = {
       description: "",
       isRunning: false,
@@ -285,23 +312,7 @@ const TimerComponent = () => {
     setTimeInput("0:00:00");
     setIsEditing(false);
     updateFirebase(resetState);
-  };
-
-  const updateFirebase = async (updates) => {
-    const snapshot = await get(timerRef);
-    const dbTimer = snapshot.val() || {};
-
-    // If we're updating lastPausedTime, only update if our time is more recent
-    if (
-      updates.lastPausedTime &&
-      dbTimer.lastPausedTime &&
-      dbTimer.lastPausedTime > updates.lastPausedTime
-    ) {
-      delete updates.lastPausedTime;
-    }
-
-    set(timerRef, { ...dbTimer, ...updates });
-  };
+  }, [updateFirebase]);
 
   if (isLoading) {
     return <div>Loading...</div>;
@@ -309,6 +320,11 @@ const TimerComponent = () => {
 
   return (
     <TimerContainer>
+      {isOffline && (
+        <div>
+          You are offline. Changes will be synced when you're back online.
+        </div>
+      )}
       <TaskInput
         type="text"
         value={timer.description}
