@@ -90,8 +90,8 @@ const TimerComponent = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [focusedTime, setFocusedTime] = useState(null);
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
-  const intervalRef = useRef(null);
   const timerRef = useRef(ref(database, "timer"));
+  const lastUpdateTimeRef = useRef(0);
 
   useEffect(() => {
     const handleOnline = () => setIsOffline(false);
@@ -102,6 +102,34 @@ const TimerComponent = () => {
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
     };
+  }, []);
+
+  const calculateElapsedTime = useCallback((timerData, currentTime) => {
+    if (timerData.isRunning && timerData.startTime) {
+      return Math.floor(
+        (currentTime - timerData.startTime - timerData.pausedElapsedInterval) /
+          1000
+      );
+    }
+    if (timerData.startTime && timerData.lastPausedTime) {
+      return Math.floor(
+        (timerData.lastPausedTime -
+          timerData.startTime -
+          timerData.pausedElapsedInterval) /
+          1000
+      );
+    }
+    return 0;
+  }, []);
+
+  const formatTime = useCallback((seconds) => {
+    if (isNaN(seconds) || seconds < 0) return "0:00:00";
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const remainingSeconds = seconds % 60;
+    return `${hours}:${minutes.toString().padStart(2, "0")}:${remainingSeconds
+      .toString()
+      .padStart(2, "0")}`;
   }, []);
 
   const updateFirebase = useCallback(
@@ -153,52 +181,53 @@ const TimerComponent = () => {
     );
 
     return () => unsubscribe();
-  }, [isEditing, updateFirebase]);
+  }, [calculateElapsedTime, formatTime, isEditing, updateFirebase]);
+
+  const updateTimerDisplay = useCallback(() => {
+    const now = Date.now();
+    const elapsedTime = calculateElapsedTime(timer, now);
+    setTimeInput(formatTime(elapsedTime));
+  }, [timer, calculateElapsedTime, formatTime]);
 
   useEffect(() => {
+    let timeoutId;
+
+    const updateTimer = () => {
+      if (timer.isRunning && !isEditing) {
+        const now = Date.now();
+        console.log(now % 10000); // Log for debugging purposes
+
+        const timeSinceLastUpdate = now - lastUpdateTimeRef.current;
+        const milliseconds = now % 1000;
+
+        if (timeSinceLastUpdate >= 1000 || milliseconds < 50) {
+          updateTimerDisplay();
+          lastUpdateTimeRef.current = now;
+
+          if (milliseconds < 50) {
+            console.info("Interval reset to 999ms");
+            timeoutId = setTimeout(updateTimer, 999);
+          } else {
+            const nextUpdateInterval = 1000 - milliseconds;
+            console.log(`Interval reset to ${nextUpdateInterval}`);
+            timeoutId = setTimeout(updateTimer, nextUpdateInterval);
+          }
+        } else {
+          timeoutId = setTimeout(updateTimer, 999);
+        }
+      }
+    };
+
     if (timer.isRunning && !isEditing) {
-      intervalRef.current = setInterval(() => {
-        const elapsedTime = calculateElapsedTime(timer, Date.now());
-        setTimeInput(formatTime(elapsedTime));
-      }, 100); // 더 정확한 업데이트를 위해 100ms로 변경
-    } else {
-      clearInterval(intervalRef.current);
+      updateTimer();
     }
-    return () => clearInterval(intervalRef.current);
-  }, [
-    timer.isRunning,
-    isEditing,
-    timer.startTime,
-    timer.pausedElapsedInterval,
-  ]);
 
-  const calculateElapsedTime = useCallback((timerData, currentTime) => {
-    if (timerData.isRunning && timerData.startTime) {
-      return Math.floor(
-        (currentTime - timerData.startTime - timerData.pausedElapsedInterval) /
-          1000
-      );
-    }
-    if (timerData.startTime && timerData.lastPausedTime) {
-      return Math.floor(
-        (timerData.lastPausedTime -
-          timerData.startTime -
-          timerData.pausedElapsedInterval) /
-          1000
-      );
-    }
-    return 0;
-  }, []);
-
-  const formatTime = useCallback((seconds) => {
-    if (isNaN(seconds) || seconds < 0) return "0:00:00";
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    const remainingSeconds = seconds % 60;
-    return `${hours}:${minutes.toString().padStart(2, "0")}:${remainingSeconds
-      .toString()
-      .padStart(2, "0")}`;
-  }, []);
+    return () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [timer, timer.isRunning, isEditing, updateTimerDisplay]);
 
   const parseTime = useCallback((timeString) => {
     const [hours, minutes, seconds] = timeString.split(":").map(Number);
