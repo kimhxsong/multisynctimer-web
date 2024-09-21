@@ -7,8 +7,13 @@ This project is a web-based timer application using React and Firebase.
 MultySyncTimer-web is a real-time synchronized timer application built with React and Firebase. The application allows users to track time with high precision and synchronizes the timer across multiple devices using Firebase. It's designed for use in scenarios where accurate timing and synchronization are critical, such as online events, shared workspaces, or study sessions.
 
 ## Demo Video
+1.	Browser Synchronization Test: This demo shows a synchronization test between two browser instances running MultySyncTimer-web. The video demonstrates real-time timer updates across both browsers, highlighting the application’s ability to maintain precise timing between multiple clients using Firebase.
+ 
 ![Screen Recording 2024-09-21 at 17 51 35](https://github.com/user-attachments/assets/19373bff-15d6-42a6-9427-fc4b9be8b558)
 
+2.	iOS and watchOS Synchronization Test: This demo features a synchronization test between multiSyncTimer-ios-watchos (private repository) and the MultySyncTimer-web app. The video demonstrates the seamless interaction and real-time synchronization between mobile (iOS and watchOS) and web platforms, emphasizing the accuracy and consistency of the timer across different devices.
+ 
+![Screen Recording 2024-09-22 at 05 34 13](https://github.com/user-attachments/assets/75d1056a-3451-40e9-9a99-6a97f432fcf3)
 
 ## Setup
 
